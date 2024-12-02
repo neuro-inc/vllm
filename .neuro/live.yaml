@@ -1,0 +1,86 @@
+kind: live
+title: build-vllm
+
+defaults:
+  life_span: 5d
+
+images:
+  vllm_build:
+    ref: image:$[[ project.id ]]:rocm-latest
+    dockerfile: $[[ flow.workspace ]]/Dockerfile.rocm
+    context: $[[ flow.workspace ]]
+    build_preset: mi210x2
+    build_args:
+      - PYTORCH_ROCM_ARCH=gfx90a;gfx908;gfx942;gfx1100
+      - BUILD_FA=1
+      - TRY_FA_WHEEL=1
+      - FA_WHEEL_URL=https://github.com/ROCm/flash-attention/releases/download/v2.5.9post1-cktile-vllm/flash_attn-2.5.9.post1-cp39-cp39-linux_x86_64.whl
+      - HF_TOKEN=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
+      - HF_HOME=/root/.cache/huggingface
+
+volumes:
+  cache:
+    remote: storage:$[[ flow.project_id ]]/cache
+    mount: /root/.cache/huggingface
+    local: cache
+  vllm_workspace:
+    remote: storage:$[[ flow.project_id ]]/vllm_workspace
+    mount: /vllm-workspace
+    local: vllm_workspace
+  build_output:
+    remote: storage:$[[ flow.project_id ]]/build_output
+    mount: /output
+    local: build_output
+
+jobs:
+  build_vllm:
+    image: ${{ images.vllm_build.ref }}
+    name: vllm-build-job
+    preset: mi210x1
+    detach: false
+    volumes:
+      - ${{ volumes.cache.ref_rw }}
+      - ${{ volumes.vllm_workspace.ref_rw }}
+      - ${{ volumes.build_output.ref_rw }}
+    env:
+      HUGGING_FACE_HUB_TOKEN: "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"
+      TORCH_USE_HIP_DSA: "1"
+      HSA_FORCE_FINE_GRAIN_PCIE: "1"
+      HSA_ENABLE_SDMA: "0"
+      ROCM_DISABLE_CU_MASK: "1"
+      VLLM_USE_TRITON_FLASH_ATTN: "0"
+      ROCR_VISIBLE_DEVICES: "0"
+      HIP_VISIBLE_DEVICES: "0"
+    cmd: |
+      echo "Building the vLLM image..."
+      echo "ROCm environment check:"
+      /opt/rocm/bin/rocm_agent_enumerator -v
+      echo "Build process completed successfully."
+
+  run_vllm:
+    image: ${{ images.vllm_build.ref }}
+    name: vllm-job
+    preset: mi210x1
+    http_port: "8081"
+    detach: true
+    volumes:
+      - ${{ volumes.cache.ref_rw }}
+      - ${{ volumes.vllm_workspace.ref_rw }}
+      - ${{ volumes.build_output.ref_rw }}
+    env:
+      HUGGING_FACE_HUB_TOKEN: "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"
+      TORCH_USE_HIP_DSA: "1"
+      HSA_FORCE_FINE_GRAIN_PCIE: "1"
+      HSA_ENABLE_SDMA: "0"
+      ROCM_DISABLE_CU_MASK: "1"
+      VLLM_USE_TRITON_FLASH_ATTN: "0"
+      ROCR_VISIBLE_DEVICES: "0"
+      HIP_VISIBLE_DEVICES: "0"
+    cmd: |
+      set -e
+      echo "Starting vLLM server..."
+      python3 -m vllm.entrypoints.openai.api_server \
+        --host=0.0.0.0 \
+        --port=8000 \
+        --model=mistralai/Mistral-7B-Instruct-v0.1 \
+        --tokenizer=mistralai/Mistral-7B-Instruct-v0.1
